@@ -13,10 +13,17 @@
  */
 package org.apache.aurora.scheduler.http;
 
+import java.lang.annotation.Annotation;
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+
 import java.net.InetSocketAddress;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Logger;
+
 
 import javax.inject.Inject;
 import javax.servlet.http.HttpServletRequest;
@@ -27,12 +34,19 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.net.HostAndPort;
 import com.google.common.util.concurrent.Atomics;
+import com.google.inject.BindingAnnotation;
 import com.twitter.common.application.modules.LocalServiceRegistry;
+import com.twitter.common.args.Arg;
+import com.twitter.common.args.CmdLine;
 import com.twitter.common.net.pool.DynamicHostSet;
 import com.twitter.common.net.pool.DynamicHostSet.HostChangeMonitor;
 import com.twitter.common.net.pool.DynamicHostSet.MonitorException;
 import com.twitter.thrift.Endpoint;
 import com.twitter.thrift.ServiceInstance;
+
+import org.apache.aurora.scheduler.http.GatekeeperHost;
+import org.apache.aurora.scheduler.http.GatekeeperPort;
+
 
 /**
  * Redirect logic for finding the leading scheduler in the event that this process is not the
@@ -50,7 +64,18 @@ public class LeaderRedirect {
   private final LocalServiceRegistry serviceRegistry;
   private final DynamicHostSet<ServiceInstance> schedulers;
 
+  private final String gatekeeperHost;
+  private final Integer gatekeeperPort;
+
   private final AtomicReference<ServiceInstance> leader = Atomics.newReference();
+
+  @Inject
+  LeaderRedirect(
+          @GatekeeperHost String gatekeeperHost,
+          @GatekeeperPort Integer gatekeeperPort) {
+      this.gatekeeperHost = gatekeeperHost;
+      this.gatekeeperPort = gatekeeperPort;
+  }
 
   @Inject
   LeaderRedirect(LocalServiceRegistry serviceRegistry, DynamicHostSet<ServiceInstance> schedulers) {
@@ -90,6 +115,13 @@ public class LeaderRedirect {
         : Optional.of(HostAndPort.fromParts(localHttp.getHostName(), localHttp.getPort()));
   }
 
+  private Optional<HostAndPort> getGatekeeperHttp() {
+    // fixme: figure out gatekeeper host/port
+    InetSocketAddress gatekeeperHttp = new InetSocketAddress(gatekeeperHost, gatekeeperPort);
+    return (gatekeeperHttp == null) ? Optional.<HostAndPort>absent()
+        : Optional.of(HostAndPort.fromParts(gatekeeperHttp.getHostName(), gatekeeperHttp.getPort()));
+  }
+
   /**
    * Gets the optional HTTP endpoint that should be redirected to in the event that this
    * scheduler is not the leader.
@@ -99,10 +131,10 @@ public class LeaderRedirect {
   @VisibleForTesting
   Optional<HostAndPort> getRedirect() {
     Optional<HostAndPort> leaderHttp = getLeaderHttp();
-    Optional<HostAndPort> localHttp = getLocalHttp();
+    Optional<HostAndPort> gatekeeperHttp = getGatekeeperHttp();
 
     if (leaderHttp.isPresent()) {
-      if (leaderHttp.equals(localHttp)) {
+      if (leaderHttp.equals(gatekeeperHttp)) {
         return Optional.absent();
       } else {
         return leaderHttp;

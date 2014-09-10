@@ -13,19 +13,29 @@
  */
 package org.apache.aurora.scheduler.app;
 
+import java.lang.annotation.Annotation;
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+
 import java.net.InetSocketAddress;
 import java.util.List;
+import java.util.Map;
 import java.util.logging.Logger;
 
+import javax.annotation.Nonnegative;
 import javax.inject.Inject;
 import javax.inject.Singleton;
-
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableList.Builder;
+import com.google.common.collect.Maps;
 import com.google.inject.AbstractModule;
+import com.google.inject.BindingAnnotation;
 import com.google.inject.Module;
+import com.google.inject.name.Names;
 import com.twitter.common.application.AbstractApplication;
 import com.twitter.common.application.AppLauncher;
 import com.twitter.common.application.Lifecycle;
@@ -53,6 +63,8 @@ import org.apache.aurora.scheduler.DriverFactory.DriverFactoryImpl;
 import org.apache.aurora.scheduler.MesosTaskFactory.ExecutorConfig;
 import org.apache.aurora.scheduler.SchedulerLifecycle;
 import org.apache.aurora.scheduler.cron.quartz.CronModule;
+import org.apache.aurora.scheduler.http.GatekeeperHost;
+import org.apache.aurora.scheduler.http.GatekeeperPort;
 import org.apache.aurora.scheduler.log.mesos.MesosLogStreamModule;
 import org.apache.aurora.scheduler.storage.backup.BackupModule;
 import org.apache.aurora.scheduler.storage.db.DbModule;
@@ -75,6 +87,15 @@ public class SchedulerMain extends AbstractApplication {
   @NotNull
   @CmdLine(name = "cluster_name", help = "Name to identify the cluster being served.")
   private static final Arg<String> CLUSTER_NAME = Arg.create();
+
+  @CmdLine(name = "gatekeeper_host", help = "Gatekeeper host to publish in zookeeper.")
+  private static final Arg<String> GATEKEEPER_HOST = Arg.create("");
+
+  @CmdLine(name = "gatekeeper_port", help = "Gatekeeper port to publish in zookeeper.")
+  private static final Arg<Integer> GATEKEEPER_PORT = Arg.create(0);
+
+  @CmdLine(name = "gatekeeper_scheme", help = "Gatekeeper HTTP scheme. Default: https")
+  private static final Arg<String> GATEKEEPER_SCHEME = Arg.create("https");
 
   @NotNull
   @NotEmpty
@@ -200,17 +221,39 @@ public class SchedulerMain extends AbstractApplication {
     }
 
     LeadershipListener leaderListener = schedulerLifecycle.prepare();
+    Map<String, InetSocketAddress> registrySockets = Maps.newHashMap();
+    Optional<InetSocketAddress> optHttpSocket;
 
-    Optional<InetSocketAddress> httpSocket =
-        Optional.fromNullable(serviceRegistry.getAuxiliarySockets().get("http"));
-    if (!httpSocket.isPresent()) {
-      throw new IllegalStateException("No HTTP service registered with LocalServiceRegistry.");
+    if (!GATEKEEPER_HOST.get().isEmpty() && GATEKEEPER_PORT.get() > 0) {
+        bind(String.class).annotatedWith(GatekeeperHost.class).toInstance("scheduler");
+        bind(Integer.class).annotatedWith(GatekeeperPort.class).toInstance(8081);
+
+        // use gatekeeper host/port to publish to zookeeper
+        LOG.info("Gatekeeper host/port defined, registering with zookeeper. ");
+        LOG.info("    Gatekeeper host :" + GATEKEEPER_HOST.get() + ": port :" + GATEKEEPER_PORT.get());
+        InetSocketAddress httpSocket = new InetSocketAddress(GATEKEEPER_HOST.get(), GATEKEEPER_PORT.get());
+        optHttpSocket = Optional.fromNullable(httpSocket);
+        if (!optHttpSocket.isPresent()) {
+          throw new IllegalStateException("No gatekeeper service running in front of scheduler.");
+        }
+
+        registrySockets.put(GATEKEEPER_SCHEME.get(), httpSocket);
+    }
+    else {
+        // no gatekeeper, use scheduler host/port to publish in zookeeper
+        LOG.info("NO Gatekeeper. Scheduler host/port defined, registering with zookeeper.");
+        optHttpSocket = Optional.fromNullable(serviceRegistry.getAuxiliarySockets().get("http"));
+        if (!optHttpSocket.isPresent()) {
+            throw new IllegalStateException("No HTTP service registered with LocalServiceRegistry.");
+        }
+        registrySockets = serviceRegistry.getAuxiliarySockets();
     }
 
+    LOG.info("        HTTP socket :" + optHttpSocket.get());
     try {
       schedulerService.lead(
-          httpSocket.get(),
-          serviceRegistry.getAuxiliarySockets(),
+          optHttpSocket.get(),
+          registrySockets,
           leaderListener);
     } catch (Group.WatchException e) {
       throw new IllegalStateException("Failed to watch group and lead service.", e);

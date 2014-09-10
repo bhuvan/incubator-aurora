@@ -197,6 +197,8 @@ Thrift.Transport.prototype = {
         if (xreq.overrideMimeType) {
             xreq.overrideMimeType('application/json');
         }
+        var csrfToken = "bhuvan-thrift-csrf-token"
+        xreq.setRequestHeader('X-Csrf-Token', csrfToken)
 
         xreq.open('POST', this.url, false);
         xreq.send(this.send_buf);

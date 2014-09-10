@@ -98,6 +98,10 @@ public class JettyServerModule extends AbstractModule {
 
   private static final Logger LOG = Logger.getLogger(JettyServerModule.class.getName());
 
+  @CmdLine(name = "http_host",
+      help = "The hostname to listen on. Default: 0.0.0.0.")
+  protected static final Arg<String> HTTP_HOST = Arg.create(null);
+
   @Nonnegative
   @CmdLine(name = "http_port",
       help = "The port to start an HTTP server on.  Default value will choose a random port.")
@@ -423,6 +427,9 @@ public class JettyServerModule extends AbstractModule {
       rootHandler.addHandler(servletHandler);
 
       Connector connector = new SelectChannelConnector();
+      if (HTTP_HOST.get() != null) {
+          connector.setHost(HTTP_HOST.get());
+      }
       connector.setPort(HTTP_PORT.get());
       server.addConnector(connector);
       server.setHandler(rootHandler);
